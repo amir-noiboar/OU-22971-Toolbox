@@ -1,30 +1,45 @@
-"""Model training helpers for the capstone workflow.
-
-TODO: Implement baseline and candidate model training.
-"""
+"""Model training, tuning, and evaluation stubs for the Unit 8 capstone."""
 
 from __future__ import annotations
 
 
-def train_model(features: object, target: object, params: dict[str, object] | None = None) -> object:
-    """Train a candidate regression model.
+def train_initial_model(features: object, use_optuna: bool = False, n_trials: int = 20) -> object:
+    """Train the first champion model from the reference dataset.
 
-    TODO: Choose the model family, fit it, and return a serializable model object.
+    TODO: Choose a baseline model, such as RandomForestRegressor or XGBoost.
+    TODO: Optionally call Optuna tuning when use_optuna is true.
     """
-    raise NotImplementedError("Model training is not implemented yet.")
+    raise NotImplementedError("Initial model training is not implemented yet.")
 
 
-def predict(model: object, features: object) -> object:
-    """Generate predictions from a trained model.
+def train_candidate_model(
+    reference_features: object,
+    batch_features: object,
+    extra_train_features: list[object] | None = None,
+    use_optuna: bool = False,
+    n_trials: int = 20,
+) -> object:
+    """Train a candidate model for a retraining run.
 
-    TODO: Validate feature alignment before calling the model.
+    TODO: Build a rolling or expanding training window.
+    TODO: Consider RandomForestRegressor for a simple baseline.
+    TODO: Consider XGBoost when the environment supports it.
+    TODO: Optionally tune hyperparameters with Optuna and log child trials to MLflow.
     """
-    raise NotImplementedError("Prediction is not implemented yet.")
+    raise NotImplementedError("Candidate model training is not implemented yet.")
 
 
-def build_training_window(reference_features: object, current_features: object) -> object:
-    """Create the training window used for initial training or retraining.
+def tune_with_optuna(training_data: object, n_trials: int = 20) -> dict[str, object]:
+    """Run optional Optuna hyperparameter tuning.
 
-    TODO: Decide rolling versus expanding window behavior.
+    TODO: Define an objective, sampler, pruner, search space, and MLflow trial logging.
     """
-    raise NotImplementedError("Training window construction is not implemented yet.")
+    raise NotImplementedError("Optuna tuning is not implemented yet.")
+
+
+def evaluate_regression(model: object, features: object) -> dict[str, float]:
+    """Evaluate regression metrics for champion or candidate models.
+
+    TODO: Compute RMSE, MAE, and any stability/slice diagnostics used by gates.
+    """
+    raise NotImplementedError("Regression evaluation is not implemented yet.")

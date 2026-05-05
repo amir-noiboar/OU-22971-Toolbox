@@ -1,38 +1,23 @@
-"""Configuration helpers for the capstone workflow.
-
-TODO: Define project defaults and runtime configuration loading.
-"""
+"""Constants and defaults for the Unit 8 MLOps capstone."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+DEFAULT_MODEL_NAME = "green_taxi_tip_model"
+DEFAULT_EXPERIMENT_NAME = "8_green_taxi_capstone"
+DEFAULT_TRACKING_URI = "http://127.0.0.1:5000"
+DEFAULT_MIN_IMPROVEMENT = 0.01
+DEFAULT_RMSE_INCREASE_THRESHOLD = 0.10
+DEFAULT_N_TRIALS = 20
 
+CHAMPION_ALIAS = "champion"
+CANDIDATE_ALIAS = "candidate"
+PREVIOUS_CHAMPION_ROLE = "previous_champion"
 
-@dataclass(frozen=True)
-class CapstoneConfig:
-    """Runtime configuration for the capstone flow.
+DECISION_ARTIFACT = "decision.json"
+FEATURE_SPEC_ARTIFACT = "feature_spec.json"
+PREDICTIONS_ARTIFACT = "predictions.parquet"
+RAW_INTEGRITY_ARTIFACT_DIR = "raw_integrity"
+NANNYML_ARTIFACT_DIR = "nannyml"
 
-    TODO: Add all required paths, MLflow settings, thresholds, and model names.
-    """
-
-    project_dir: Path
-    tracking_uri: str
-    experiment_name: str
-    model_name: str
-
-
-def default_config(project_dir: Path | None = None) -> CapstoneConfig:
-    """Build a default capstone configuration.
-
-    TODO: Decide final defaults and allow command-line overrides from the flow.
-    """
-    raise NotImplementedError("Configuration defaults are not implemented yet.")
-
-
-def validate_config(config: CapstoneConfig) -> None:
-    """Validate a capstone configuration before running the workflow.
-
-    TODO: Check paths, thresholds, registry names, and required settings.
-    """
-    raise NotImplementedError("Configuration validation is not implemented yet.")
+TARGET_COLUMN = "tip_amount"
+LEAKAGE_COLUMNS = ("tip_amount", "total_amount")

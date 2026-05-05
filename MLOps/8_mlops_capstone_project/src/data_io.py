@@ -1,32 +1,30 @@
-"""Data loading and persistence helpers for the capstone workflow.
-
-TODO: Implement robust loaders for TLC data and decision artifacts.
-"""
+"""Data loading and path helpers for the Unit 8 capstone."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 
-def resolve_input_path(path: str | Path, base_dir: Path | None = None) -> Path:
-    """Resolve user-provided input paths for capstone runs.
+def resolve_path(path: str | Path, base_dir: str | Path | None = None) -> Path:
+    """Resolve a dataset path from the current working directory or a base directory.
 
-    TODO: Mirror the path ergonomics from earlier units without duplicating logic blindly.
+    TODO: Reuse the Unit 6 ergonomics where relative paths work from repo root or unit dir.
     """
-    raise NotImplementedError("Input path resolution is not implemented yet.")
+    raise NotImplementedError("Path resolution is not implemented yet.")
 
 
-def load_batch(path: str | Path) -> object:
-    """Load a raw batch dataset.
+def load_parquet(path: str | Path) -> object:
+    """Load a parquet file for reference, batch, or training data.
 
-    TODO: Support the selected capstone data format and datetime normalization.
+    TODO: Read parquet with pandas and normalize timestamp columns.
+    TODO: Preserve dataset lineage in MLflow via mlflow.log_input.
     """
-    raise NotImplementedError("Batch loading is not implemented yet.")
+    raise NotImplementedError("Parquet loading is not implemented yet.")
 
 
-def write_decision(decision: dict[str, object], path: str | Path) -> None:
-    """Persist a workflow decision artifact.
+def load_optional_parquets(paths: list[str] | tuple[str, ...]) -> list[object]:
+    """Load optional extra training parquet files.
 
-    TODO: Write reproducible JSON with all gate inputs and final actions.
+    TODO: Resolve and load each path while preserving per-dataset lineage.
     """
-    raise NotImplementedError("Decision persistence is not implemented yet.")
+    raise NotImplementedError("Optional training data loading is not implemented yet.")

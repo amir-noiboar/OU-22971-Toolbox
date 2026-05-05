@@ -1,30 +1,35 @@
-"""Data and model quality gates for the capstone workflow.
-
-TODO: Implement hard integrity checks and model-performance gates.
-"""
+"""Hard data quality checks for the Unit 8 capstone."""
 
 from __future__ import annotations
 
 
-def run_hard_integrity_checks(raw_data: object) -> dict[str, object]:
-    """Run fail-fast checks on raw batch data.
+def run_hard_integrity_checks(raw_data: object, labels_required: bool = True) -> dict[str, object]:
+    """Run fail-fast integrity checks on raw batch data.
 
-    TODO: Check required columns, datetime sanity, label availability, and impossible values.
+    The returned structure should include:
+    hard_passed, errors, warnings, metrics, and tables.
+
+    TODO: Check required columns.
+    TODO: Check invalid pickup/dropoff datetimes.
+    TODO: Check missing target when labels are required.
+    TODO: Check negative trip_distance values.
+    TODO: Check dropoff before pickup.
+    TODO: Return structured errors, warnings, scalar metrics, and small tables.
     """
     raise NotImplementedError("Hard integrity checks are not implemented yet.")
 
 
-def evaluate_regression(model: object, features: object, target: object) -> dict[str, float]:
-    """Evaluate a regression model on a labeled batch.
+def required_columns() -> tuple[str, ...]:
+    """Return the raw columns required by the capstone policy.
 
-    TODO: Compute RMSE, MAE, and any slice diagnostics needed for promotion gates.
+    TODO: Finalize the minimum schema for training, monitoring, and inference.
     """
-    raise NotImplementedError("Regression evaluation is not implemented yet.")
+    raise NotImplementedError("Required-column policy is not implemented yet.")
 
 
-def summarize_quality_gates(results: dict[str, object]) -> dict[str, object]:
-    """Summarize quality checks into auditable gate outcomes.
+def summarize_hard_checks(check_result: dict[str, object]) -> dict[str, object]:
+    """Summarize hard checks for MLflow logging and decision records.
 
-    TODO: Convert raw check results into pass, warn, fail, and reason fields.
+    TODO: Normalize pass/fail fields and user-readable reasons.
     """
-    raise NotImplementedError("Quality gate summarization is not implemented yet.")
+    raise NotImplementedError("Hard-check summarization is not implemented yet.")
