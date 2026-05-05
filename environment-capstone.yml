@@ -1,0 +1,21 @@
+name: 22971-capstone
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - pyarrow
+  - xgboost
+  - lightgbm
+  - ipykernel
+  - jupyter
+  - pip:
+      - mlflow==3.8.*
+      - optuna==4.6.*
+      - metaflow
+      - nannyml
