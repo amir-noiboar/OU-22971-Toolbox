@@ -61,3 +61,6 @@ outputs/
 environment-capstone-lock.yml
 .metaflow/
 .vscode/
+
+# Capstone local data
+MLOps/8_mlops_capstone_project/data/
