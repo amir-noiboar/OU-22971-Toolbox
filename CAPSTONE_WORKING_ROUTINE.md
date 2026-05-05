@@ -109,3 +109,33 @@ environment-capstone.yml
 The local lock file is not committed:
 
 environment-capstone-lock.yml
+
+Capstone development target
+
+Planned structure:
+
+MLOps/8_mlops_capstone_project/
+  capstone_flow.py
+  src/
+    config.py
+    data_io.py
+    features.py
+    quality.py
+    nannyml_checks.py
+    modeling.py
+    registry.py
+    inference.py
+    decisions.py
+    mlflow_utils.py
+  tests/
+
+Implementation order:
+
+Create skeleton.
+Implement feature engineering.
+Implement hard integrity gate.
+Implement MLflow registry/champion logic.
+Implement Metaflow orchestration.
+Add NannyML soft checks.
+Add batch inference artifact.
+Write README and demo commands.
