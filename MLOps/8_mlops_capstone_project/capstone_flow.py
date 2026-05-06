@@ -405,11 +405,11 @@ class CapstoneFlow(FlowSpec):
                 if logging_enabled:
                     mlflow_utils.log_metrics_safe(
                         self.initial_train_result.train_metrics,
-                        prefix="initial_train",
+                        prefix="initial",
                     )
                     mlflow_utils.log_metrics_safe(
                         self.initial_train_result.validation_metrics,
-                        prefix="initial_validation",
+                        prefix="initial",
                     )
                     mlflow_utils.log_params_safe(self.initial_train_result.best_params)
                     self.champion_info = registry.bootstrap_champion(
@@ -471,10 +471,15 @@ class CapstoneFlow(FlowSpec):
             "rmse_baseline": rmse_baseline,
             "rmse_increase_pct": rmse_increase_pct,
         }
+        champion_log_metrics = {
+            **raw_metrics,
+            "baseline_rmse": rmse_baseline,
+            "rmse_increase_pct": rmse_increase_pct,
+        }
 
         with self._mlflow_step_run("evaluate_champion") as logging_enabled:
             if logging_enabled:
-                mlflow_utils.log_metrics_safe(self.champion_metrics)
+                mlflow_utils.log_metrics_safe(champion_log_metrics)
 
         self.next(self.decide_retrain)
 
@@ -494,12 +499,35 @@ class CapstoneFlow(FlowSpec):
             and soft_warning_present
         )
         self.retrain_needed = bool(performance_degraded or soft_warning_triggered)
+        rmse_increase_text = (
+            f"{rmse_increase_pct:.6f}"
+            if rmse_increase_pct is not None
+            else "unavailable"
+        )
+        threshold_text = f"{float(self.rmse_increase_threshold):.6f}"
+        if performance_degraded:
+            retrain_reason = (
+                f"rmse increase {rmse_increase_text} "
+                f"exceeded threshold {threshold_text}"
+            )
+            retrain_reason_source = "performance_degradation"
+        elif soft_warning_triggered:
+            retrain_reason = (
+                "soft monitoring warning triggered retraining; "
+                f"rmse increase {rmse_increase_text} "
+                f"did not exceed threshold {threshold_text}"
+            )
+            retrain_reason_source = "soft_monitoring_warning"
+        else:
+            retrain_reason = "retraining recommended"
+            retrain_reason_source = "unknown"
         self.champion_metrics.update(
             {
                 "performance_degraded": int(performance_degraded),
                 "soft_warning_present": int(soft_warning_present),
                 "soft_warning_triggered": int(soft_warning_triggered),
                 "retrain_on_soft_warning": int(bool(self.retrain_on_soft_warning)),
+                "retrain_reason_source": retrain_reason_source,
             }
         )
 
@@ -513,6 +541,7 @@ class CapstoneFlow(FlowSpec):
                 },
                 rmse_increase_threshold=float(self.rmse_increase_threshold),
                 warnings=self.soft_result.warnings,
+                reason=retrain_reason,
             )
         else:
             self.decision = decisions.build_no_retrain_decision(
@@ -562,11 +591,11 @@ class CapstoneFlow(FlowSpec):
             if logging_enabled:
                 mlflow_utils.log_metrics_safe(
                     self.candidate_result.train_metrics,
-                    prefix="candidate_train",
+                    prefix="candidate",
                 )
                 mlflow_utils.log_metrics_safe(
                     self.candidate_result.validation_metrics,
-                    prefix="candidate_validation",
+                    prefix="candidate",
                 )
                 mlflow_utils.log_params_safe(self.candidate_result.best_params)
                 if self.candidate_result.optuna_trials is not None:
@@ -675,7 +704,7 @@ class CapstoneFlow(FlowSpec):
 
         with self._mlflow_step_run("evaluate_candidate") as logging_enabled:
             if logging_enabled:
-                mlflow_utils.log_metrics_safe(self.candidate_metrics)
+                mlflow_utils.log_metrics_safe(raw_candidate_metrics)
                 mlflow_utils.log_metrics_safe(self.stability_metrics)
                 if self.stability_check_assumption:
                     mlflow_utils.log_tags_safe(
