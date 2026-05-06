@@ -456,24 +456,34 @@ class CapstoneFlow(FlowSpec):
             self.batch_ff,
             metric_prefix="champion",
         )
+        reference_metrics = modeling.evaluate_regression_model(
+            self.champion_model,
+            self.reference_ff,
+            metric_prefix="champion_reference",
+        )
         rmse_champion = _metric(raw_metrics, "champion_rmse")
-        rmse_baseline = _baseline_rmse(
+        rmse_reference = _metric(reference_metrics, "champion_reference_rmse")
+        naive_baseline_rmse = _baseline_rmse(
             reference_y=self.reference_ff.y,
             batch_y=self.batch_ff.y,
         )
         rmse_increase_pct = _safe_rmse_increase(
             rmse_champion=rmse_champion,
-            rmse_baseline=rmse_baseline,
+            rmse_baseline=rmse_reference,
         )
         self.champion_metrics = {
             **raw_metrics,
+            **reference_metrics,
             "rmse_champion": rmse_champion,
-            "rmse_baseline": rmse_baseline,
+            "rmse_reference": rmse_reference,
             "rmse_increase_pct": rmse_increase_pct,
+            "rmse_increase_basis": "champion_batch_vs_reference",
+            "naive_baseline_rmse": naive_baseline_rmse,
         }
         champion_log_metrics = {
             **raw_metrics,
-            "baseline_rmse": rmse_baseline,
+            **reference_metrics,
+            "naive_baseline_rmse": naive_baseline_rmse,
             "rmse_increase_pct": rmse_increase_pct,
         }
 
@@ -507,14 +517,15 @@ class CapstoneFlow(FlowSpec):
         threshold_text = f"{float(self.rmse_increase_threshold):.6f}"
         if performance_degraded:
             retrain_reason = (
-                f"rmse increase {rmse_increase_text} "
-                f"exceeded threshold {threshold_text}"
+                "champion batch RMSE increased versus reference RMSE by "
+                f"{rmse_increase_text}, exceeding threshold {threshold_text}"
             )
             retrain_reason_source = "performance_degradation"
         elif soft_warning_triggered:
             retrain_reason = (
                 "soft monitoring warning triggered retraining; "
-                f"rmse increase {rmse_increase_text} "
+                "champion batch-vs-reference RMSE increase "
+                f"{rmse_increase_text} "
                 f"did not exceed threshold {threshold_text}"
             )
             retrain_reason_source = "soft_monitoring_warning"
