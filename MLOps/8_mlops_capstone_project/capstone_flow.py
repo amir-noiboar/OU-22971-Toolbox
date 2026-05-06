@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterator
 
 import mlflow
@@ -120,9 +121,27 @@ class CapstoneFlow(FlowSpec):
     )
 
     def _maybe_fail(self, step_name: str) -> None:
-        """Raise when ``fail_at_step`` matches a step name."""
-        if str(self.fail_at_step).strip() == step_name:
-            raise RuntimeError(f"Intentional failure at step: {step_name}")
+        """Raise once for a requested step, then allow Metaflow resume."""
+        if str(self.fail_at_step).strip() != step_name:
+            return
+
+        safe_step_name = "".join(
+            char if char.isalnum() or char in {"-", "_"} else "_"
+            for char in step_name
+        )
+        marker_path = Path(f"/tmp/capstone_flow_fail_once_{safe_step_name}.marker")
+        if marker_path.exists():
+            print(
+                f"Intentional failure marker exists for {step_name}; "
+                "continuing for resume."
+            )
+            return
+
+        marker_path.write_text(
+            f"Intentional failure marker for {step_name}\n",
+            encoding="utf-8",
+        )
+        raise RuntimeError(f"Intentional failure at step: {step_name}")
 
     @contextmanager
     def _mlflow_step_run(self, step_name: str) -> Iterator[bool]:
