@@ -83,7 +83,7 @@ def build_estimator(
     n_jobs: int = -1,
     params: Mapping[str, object] | None = None,
 ) -> object:
-    """Build a supported regression estimator."""
+    """Build a random_forest, xgboost, or xgboost_gpu regression estimator."""
     normalized = _normalize_model_type(model_type)
     final_params = _default_estimator_params(
         model_type=normalized,
@@ -95,17 +95,19 @@ def build_estimator(
 
     if normalized == "random_forest":
         return RandomForestRegressor(**final_params)
-    if normalized == "xgboost":
+    if normalized in {"xgboost", "xgboost_gpu"}:
         try:
             from xgboost import XGBRegressor
         except ImportError as exc:
             raise ImportError(
-                "xgboost is not installed. Install xgboost or use model_type='random_forest'."
+                "xgboost is not installed. Install xgboost or use "
+                "model_type='random_forest'."
             ) from exc
         return XGBRegressor(**final_params)
 
     raise ValueError(
-        f"Unsupported model_type: {model_type!r}. Expected 'random_forest', 'xgboost', or 'xgb'."
+        f"Unsupported model_type: {model_type!r}. Expected "
+        "'random_forest', 'xgboost', or 'xgboost_gpu'."
     )
 
 
@@ -370,7 +372,7 @@ def _sample_params(trial: object, model_type: str) -> dict[str, object]:
             "min_samples_leaf": trial.suggest_int("min_samples_leaf", 20, 120),
             "max_features": trial.suggest_categorical("max_features", ["sqrt", 0.6, 0.8, 1.0]),
         }
-    if normalized == "xgboost":
+    if normalized in {"xgboost", "xgboost_gpu"}:
         return {
             "n_estimators": trial.suggest_int("n_estimators", 120, 500),
             "max_depth": trial.suggest_int("max_depth", 3, 7),
@@ -379,7 +381,10 @@ def _sample_params(trial: object, model_type: str) -> dict[str, object]:
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
             "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 10.0, log=True),
         }
-    raise ValueError(f"Unsupported model_type for Optuna: {model_type!r}")
+    raise ValueError(
+        f"Unsupported model_type for Optuna: {model_type!r}. Expected "
+        "'random_forest', 'xgboost', or 'xgboost_gpu'."
+    )
 
 
 def _validate_feature_frame(
@@ -506,8 +511,22 @@ def _default_estimator_params(
             "random_state": random_state,
             "n_jobs": n_jobs,
         }
+    if normalized == "xgboost_gpu":
+        return {
+            "n_estimators": 300,
+            "max_depth": 4,
+            "learning_rate": 0.05,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "device": "cuda",
+            "random_state": random_state,
+            "n_jobs": n_jobs,
+        }
     raise ValueError(
-        f"Unsupported model_type: {model_type!r}. Expected 'random_forest', 'xgboost', or 'xgb'."
+        f"Unsupported model_type: {model_type!r}. Expected "
+        "'random_forest', 'xgboost', or 'xgboost_gpu'."
     )
 
 
@@ -536,6 +555,8 @@ def _normalize_model_type(model_type: str) -> str:
         return "random_forest"
     if normalized in {"xgboost", "xgb"}:
         return "xgboost"
+    if normalized in {"xgboost_gpu", "xgb_gpu", "gpu_xgboost"}:
+        return "xgboost_gpu"
     return normalized
 
 

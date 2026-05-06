@@ -93,6 +93,11 @@ class CapstoneFlow(FlowSpec):
         default=config.defaults().use_optuna,
         help="Whether candidate training should use optional Optuna tuning.",
     )
+    retrain_on_soft_warning = Parameter(
+        "retrain_on_soft_warning",
+        default=True,
+        help="Whether soft monitoring warnings automatically trigger retraining.",
+    )
     n_trials = Parameter(
         "n_trials",
         default=config.DEFAULT_N_TRIALS,
@@ -195,6 +200,7 @@ class CapstoneFlow(FlowSpec):
                         ),
                         "random_state": int(self.random_state),
                         "use_optuna": bool(self.use_optuna),
+                        "retrain_on_soft_warning": bool(self.retrain_on_soft_warning),
                         "n_trials": int(self.n_trials),
                         "test_size": float(self.test_size),
                         "n_jobs": int(self.n_jobs),
@@ -459,12 +465,23 @@ class CapstoneFlow(FlowSpec):
         self._maybe_fail("decide_retrain")
 
         rmse_increase_pct = _metric(self.champion_metrics, "rmse_increase_pct")
-        self.retrain_needed = bool(
-            (
-                rmse_increase_pct is not None
-                and rmse_increase_pct > float(self.rmse_increase_threshold)
-            )
-            or bool(getattr(self.soft_result, "warning", False))
+        performance_degraded = (
+            rmse_increase_pct is not None
+            and rmse_increase_pct > float(self.rmse_increase_threshold)
+        )
+        soft_warning_present = bool(getattr(self.soft_result, "warning", False))
+        soft_warning_triggered = (
+            bool(self.retrain_on_soft_warning)
+            and soft_warning_present
+        )
+        self.retrain_needed = bool(performance_degraded or soft_warning_triggered)
+        self.champion_metrics.update(
+            {
+                "performance_degraded": int(performance_degraded),
+                "soft_warning_present": int(soft_warning_present),
+                "soft_warning_triggered": int(soft_warning_triggered),
+                "retrain_on_soft_warning": int(bool(self.retrain_on_soft_warning)),
+            }
         )
 
         if self.retrain_needed:
