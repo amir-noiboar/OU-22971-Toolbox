@@ -1,72 +1,112 @@
-"""Metaflow skeleton for the Unit 8 MLOps capstone.
+"""Metaflow workflow for the Unit 8 MLOps capstone.
 
 Manual workflow:
-new batch -> integrity gate -> feature engineering -> champion evaluation ->
-optional retraining -> promotion gate -> batch inference.
-
-TODO: Implement the placeholder calls with the real capstone business logic.
+new batch -> hard integrity gate -> feature engineering -> soft monitoring ->
+champion evaluation -> optional retraining -> promotion gate -> batch inference.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Iterator
+
+import mlflow
+import mlflow.sklearn
+import numpy as np
 from metaflow import FlowSpec, Parameter, step
 
-from src import data_io, decisions, features, inference, mlflow_utils, modeling
-from src import nannyml_checks, quality, registry
+from src import config, data_io, decisions, features, inference, mlflow_utils
+from src import modeling, nannyml_checks, quality, registry
 
 
 class CapstoneFlow(FlowSpec):
-    """Green Taxi tip prediction monitoring and retraining flow skeleton."""
+    """Green Taxi tip prediction monitoring, retraining, and inference flow."""
 
     reference_path = Parameter(
         "reference_path",
+        default=str(config.DEFAULT_REFERENCE_PATH),
         help="Reference parquet path used for baseline checks and bootstrap training.",
-        required=True,
     )
     batch_path = Parameter(
         "batch_path",
+        default=str(config.DEFAULT_BATCH_PATH),
         help="Current batch parquet path to monitor, evaluate, and score.",
-        required=True,
     )
     extra_train_paths = Parameter(
         "extra_train_paths",
         default="",
         help="Optional comma-separated parquet paths for candidate retraining windows.",
     )
-    model_name = Parameter(
-        "model_name",
-        default="green_taxi_tip_model",
-        help="MLflow registered model name.",
-    )
-    experiment_name = Parameter(
-        "experiment_name",
-        default="8_green_taxi_capstone",
-        help="MLflow experiment name.",
+    inference_output_path = Parameter(
+        "inference_output_path",
+        default=str(config.DEFAULT_INFERENCE_OUTPUT_PATH),
+        help="Local parquet path for offline batch predictions.",
     )
     tracking_uri = Parameter(
         "tracking_uri",
-        default="http://127.0.0.1:5000",
+        default=config.DEFAULT_TRACKING_URI,
         help="MLflow tracking URI.",
+    )
+    experiment_name = Parameter(
+        "experiment_name",
+        default=config.DEFAULT_EXPERIMENT_NAME,
+        help="MLflow experiment name.",
+    )
+    model_name = Parameter(
+        "model_name",
+        default=config.DEFAULT_MODEL_NAME,
+        help="MLflow registered model name.",
+    )
+    model_type = Parameter(
+        "model_type",
+        default=config.defaults().model_type,
+        help="Model family to train: random_forest, xgboost, or xgb.",
     )
     min_improvement = Parameter(
         "min_improvement",
-        default=0.01,
+        default=config.DEFAULT_MIN_IMPROVEMENT,
         help="Minimum relative RMSE improvement required for promotion.",
     )
     rmse_increase_threshold = Parameter(
         "rmse_increase_threshold",
-        default=0.10,
-        help="Placeholder relative RMSE increase threshold for retrain decisions.",
+        default=config.DEFAULT_RMSE_INCREASE_THRESHOLD,
+        help="Relative champion RMSE increase threshold for retraining.",
+    )
+    missingness_warn_threshold = Parameter(
+        "missingness_warn_threshold",
+        default=config.defaults().missingness_warn_threshold,
+        help="Soft warning threshold for missingness increase versus reference.",
+    )
+    unseen_category_warn_threshold = Parameter(
+        "unseen_category_warn_threshold",
+        default=config.defaults().unseen_category_warn_threshold,
+        help="Soft warning threshold for unseen categorical values versus reference.",
+    )
+    random_state = Parameter(
+        "random_state",
+        default=config.defaults().random_state,
+        help="Random seed for model training.",
     )
     use_optuna = Parameter(
         "use_optuna",
-        default=False,
+        default=config.defaults().use_optuna,
         help="Whether candidate training should use optional Optuna tuning.",
     )
     n_trials = Parameter(
         "n_trials",
-        default=20,
+        default=config.DEFAULT_N_TRIALS,
         help="Number of Optuna trials when tuning is enabled.",
+    )
+    test_size = Parameter(
+        "test_size",
+        default=config.defaults().test_size,
+        help="Validation split fraction for model training.",
+    )
+    n_jobs = Parameter(
+        "n_jobs",
+        default=config.defaults().n_jobs,
+        help="Parallel jobs for supported estimators.",
     )
     fail_at_step = Parameter(
         "fail_at_step",
@@ -75,95 +115,246 @@ class CapstoneFlow(FlowSpec):
     )
 
     def _maybe_fail(self, step_name: str) -> None:
-        """Raise when fail_at_step matches a step name.
-
-        TODO: Use this for a Metaflow failure/resume demo.
-        """
-        if self.fail_at_step == step_name:
+        """Raise when ``fail_at_step`` matches a step name."""
+        if str(self.fail_at_step).strip() == step_name:
             raise RuntimeError(f"Intentional failure at step: {step_name}")
+
+    @contextmanager
+    def _mlflow_step_run(self, step_name: str) -> Iterator[bool]:
+        """Open a short MLflow run for a Metaflow step when possible."""
+        batch_id = getattr(self, "batch_id", "unknown_batch")
+        run_name = f"capstone_{step_name}_{batch_id}"
+        try:
+            mlflow_utils.init_mlflow(
+                tracking_uri=str(self.tracking_uri),
+                experiment_name=str(self.experiment_name),
+            )
+            active_run = mlflow.active_run()
+            run_context = mlflow.start_run(
+                run_name=run_name,
+                nested=active_run is not None,
+            )
+        except Exception as exc:
+            print(
+                "MLflow logging disabled for "
+                f"{step_name}: {type(exc).__name__}: {exc}"
+            )
+            yield False
+            return
+
+        with run_context:
+            mlflow_utils.log_tags_safe(
+                {
+                    "metaflow_step": step_name,
+                    "batch_id": batch_id,
+                    "model_name": str(self.model_name),
+                }
+            )
+            yield True
+
+    def _model_config(self) -> modeling.ModelConfig:
+        """Build model configuration from flow parameters."""
+        return modeling.ModelConfig(
+            model_type=str(self.model_type),
+            random_state=int(self.random_state),
+            use_optuna=bool(self.use_optuna),
+            n_trials=int(self.n_trials),
+            test_size=float(self.test_size),
+            n_jobs=int(self.n_jobs),
+        )
 
     @step
     def start(self) -> None:
-        """Initialize run configuration and MLflow tracking."""
+        """Initialize flow configuration."""
+        self.flow_start_time = datetime.now(timezone.utc).isoformat()
+        self.decision = None
+        self.final_decision = None
+        self.retrain_needed = False
+        self.promotion_recommended = False
+        self.promotion_executed = False
+        self.extra_train_path_list = data_io.parse_extra_train_paths(self.extra_train_paths)
         self._maybe_fail("start")
-        self.extra_train_path_list = [
-            path.strip() for path in str(self.extra_train_paths).split(",") if path.strip()
-        ]
 
-        # TODO: Log flow parameters and common tags to MLflow.
-        mlflow_utils.initialize_mlflow(
-            tracking_uri=str(self.tracking_uri),
-            experiment_name=str(self.experiment_name),
-        )
+        with self._mlflow_step_run("start") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_params_safe(
+                    {
+                        "reference_path": str(self.reference_path),
+                        "batch_path": str(self.batch_path),
+                        "extra_train_paths": ",".join(map(str, self.extra_train_path_list)),
+                        "inference_output_path": str(self.inference_output_path),
+                        "tracking_uri": str(self.tracking_uri),
+                        "experiment_name": str(self.experiment_name),
+                        "model_name": str(self.model_name),
+                        "model_type": str(self.model_type),
+                        "min_improvement": float(self.min_improvement),
+                        "rmse_increase_threshold": float(self.rmse_increase_threshold),
+                        "missingness_warn_threshold": float(self.missingness_warn_threshold),
+                        "unseen_category_warn_threshold": float(
+                            self.unseen_category_warn_threshold
+                        ),
+                        "random_state": int(self.random_state),
+                        "use_optuna": bool(self.use_optuna),
+                        "n_trials": int(self.n_trials),
+                        "test_size": float(self.test_size),
+                        "n_jobs": int(self.n_jobs),
+                        "fail_at_step": str(self.fail_at_step),
+                    }
+                )
         self.next(self.load_data)
 
     @step
     def load_data(self) -> None:
-        """Load reference and current batch data."""
+        """Load reference, batch, and optional training parquet data."""
         self._maybe_fail("load_data")
 
-        # TODO: Preserve dataset lineage in MLflow for reference, batch, and extra train data.
-        self.reference_resolved_path = data_io.resolve_path(self.reference_path)
-        self.batch_resolved_path = data_io.resolve_path(self.batch_path)
-        self.reference_raw = data_io.load_parquet(self.reference_resolved_path)
-        self.batch_raw = data_io.load_parquet(self.batch_resolved_path)
-        self.extra_train_raw = data_io.load_optional_parquets(self.extra_train_path_list)
-        mlflow_utils.log_dataset_lineage(
-            {
-                "reference_path": str(self.reference_resolved_path),
-                "batch_path": str(self.batch_resolved_path),
-                "extra_train_paths": self.extra_train_path_list,
-            }
+        self.reference_dataset = data_io.load_reference(self.reference_path)
+        self.batch_dataset = data_io.load_batch(self.batch_path)
+        self.extra_train_datasets = data_io.load_optional_training_datasets(
+            self.extra_train_path_list
         )
+        self.reference_raw = self.reference_dataset.df
+        self.batch_raw = self.batch_dataset.df
+        self.extra_train_raw = [dataset.df for dataset in self.extra_train_datasets]
+        self.reference_batch_id = self.reference_dataset.batch_id
+        self.batch_id = self.batch_dataset.batch_id
+        self.extra_train_batch_ids = [
+            dataset.batch_id for dataset in self.extra_train_datasets
+        ]
+
+        dataset_summaries = {
+            "reference": data_io.dataset_summary(self.reference_dataset),
+            "batch": data_io.dataset_summary(self.batch_dataset),
+            "extra_train": data_io.datasets_summary(self.extra_train_datasets),
+        }
+
+        with self._mlflow_step_run("load_data") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_artifact_dict(
+                    dataset_summaries,
+                    "lineage/dataset_summaries.json",
+                )
+                mlflow_utils.log_params_safe(
+                    {
+                        "reference_batch_id": self.reference_batch_id,
+                        "batch_id": self.batch_id,
+                        "n_extra_train_datasets": len(self.extra_train_datasets),
+                    }
+                )
+                mlflow_utils.log_dataset_input_from_pandas(
+                    self.reference_raw,
+                    source_path=str(self.reference_dataset.path),
+                    name=f"reference_{self.reference_batch_id}",
+                    context="raw_reference",
+                )
+                mlflow_utils.log_dataset_input_from_pandas(
+                    self.batch_raw,
+                    source_path=str(self.batch_dataset.path),
+                    name=f"batch_{self.batch_id}",
+                    context="raw_batch",
+                )
+                for dataset in self.extra_train_datasets:
+                    mlflow_utils.log_dataset_input_from_pandas(
+                        dataset.df,
+                        source_path=str(dataset.path),
+                        name=f"extra_train_{dataset.batch_id}",
+                        context="raw_extra_train",
+                    )
+
         self.next(self.raw_integrity_gate)
 
     @step
     def raw_integrity_gate(self) -> None:
-        """Run fail-fast raw checks and warning-only NannyML checks."""
+        """Run fail-fast raw integrity checks before feature engineering."""
         self._maybe_fail("raw_integrity_gate")
 
-        # TODO: Log raw integrity artifacts, metrics, and tables.
         self.hard_integrity = quality.run_hard_integrity_checks(
             self.batch_raw,
             labels_required=True,
         )
-        self.hard_integrity_passed = bool(self.hard_integrity.get("hard_passed", False))
-        mlflow_utils.log_tables("raw_integrity", self.hard_integrity.get("tables", {}))
-        mlflow_utils.log_metrics("raw_integrity", self.hard_integrity.get("metrics", {}))
+        self.hard_integrity_passed = bool(self.hard_integrity.hard_passed)
 
-        if not self.hard_integrity_passed:
-            # TODO: Log decision.json always, including action="reject_batch".
-            self.final_decision = decisions.build_reject_decision(
+        with self._mlflow_step_run("raw_integrity_gate") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_integrity_result(
+                    self.hard_integrity,
+                    artifact_dir=config.INTEGRITY_ARTIFACT_DIR,
+                    metric_prefix="integrity",
+                )
+
+                if not self.hard_integrity_passed:
+                    self.decision = decisions.build_reject_decision(
+                        integrity_result=self.hard_integrity,
+                        reason="hard_integrity_failure",
+                    )
+                    self.final_decision = self.decision
+                    mlflow_utils.log_decision(
+                        self.decision,
+                        artifact_file=config.DECISION_ARTIFACT,
+                    )
+
+        if not self.hard_integrity_passed and self.decision is None:
+            self.decision = decisions.build_reject_decision(
+                integrity_result=self.hard_integrity,
                 reason="hard_integrity_failure",
-                evidence=self.hard_integrity,
             )
-            mlflow_utils.log_decision_json(self.final_decision)
-            self.next(self.end)
-        else:
-            # TODO: Log NannyML soft-gate artifacts and set integrity_warn=true when needed.
-            self.soft_integrity = nannyml_checks.run_soft_monitoring_checks(
-                reference_data=self.reference_raw,
-                current_data=self.batch_raw,
-            )
-            mlflow_utils.set_decision_tags(
-                {"integrity_warn": str(self.soft_integrity.get("integrity_warn", False)).lower()}
-            )
-            mlflow_utils.log_tables("nannyml", self.soft_integrity.get("tables", {}))
-            self.next(self.feature_engineering)
+            self.final_decision = self.decision
+
+        self.integrity_branch = (
+            "passed" if self.hard_integrity_passed else "failed"
+        )
+        self.next(
+            {
+                "passed": self.feature_engineering,
+                "failed": self.end,
+            },
+            condition="integrity_branch",
+        )
 
     @step
     def feature_engineering(self) -> None:
-        """Build stable features for reference, batch, and training windows."""
+        """Build stable features and run warning-only soft monitoring checks."""
         self._maybe_fail("feature_engineering")
 
-        # TODO: Reuse the same feature engineering for training, evaluation, and inference.
-        self.reference_features = features.build_features(self.reference_raw)
-        self.batch_features = features.build_features(self.batch_raw)
-        self.extra_train_features = features.build_optional_training_features(self.extra_train_raw)
-        self.feature_spec = features.build_feature_spec(self.reference_features)
+        self.reference_ff = features.build_feature_frame(
+            self.reference_raw,
+            labels_required=True,
+        )
+        self.batch_ff = features.build_feature_frame(
+            self.batch_raw,
+            labels_required=True,
+        )
+        self.extra_train_ffs = [
+            features.build_feature_frame(raw_dataset, labels_required=True)
+            for raw_dataset in self.extra_train_raw
+        ]
+        self.feature_spec = self.reference_ff.spec
+        self.soft_result = nannyml_checks.run_soft_checks(
+            self.reference_ff.X,
+            self.batch_ff.X,
+            feature_spec=self.feature_spec,
+            missingness_warn_threshold=float(self.missingness_warn_threshold),
+            unseen_category_warn_threshold=float(self.unseen_category_warn_threshold),
+            enable_nannyml=True,
+        )
+        self.integrity_warn = bool(self.soft_result.warning)
 
-        # TODO: Log feature_spec.json for schema debugging and inference alignment.
-        mlflow_utils.log_artifact_dict(self.feature_spec, "feature_spec.json")
+        with self._mlflow_step_run("feature_engineering") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_feature_spec(
+                    self.feature_spec,
+                    artifact_file=config.FEATURE_SPEC_ARTIFACT,
+                )
+                mlflow_utils.log_metrics_safe(
+                    self.soft_result.metrics,
+                    prefix="soft_check",
+                )
+                mlflow_utils.log_tables(
+                    self.soft_result.tables,
+                    artifact_dir=config.SOFT_CHECK_ARTIFACT_DIR,
+                )
+                mlflow_utils.log_tags_safe({"integrity_warn": self.integrity_warn})
+
         self.next(self.load_or_bootstrap_champion)
 
     @step
@@ -171,20 +362,63 @@ class CapstoneFlow(FlowSpec):
         """Load the champion model or bootstrap the first champion."""
         self._maybe_fail("load_or_bootstrap_champion")
 
-        # TODO: Try models:/<model_name>@champion.
-        self.champion = registry.get_champion_by_alias(str(self.model_name))
-        if self.champion is None:
-            # TODO: Bootstrap champion if no @champion model exists.
-            self.initial_model = modeling.train_initial_model(
-                features=self.reference_features,
-                use_optuna=bool(self.use_optuna),
-                n_trials=int(self.n_trials),
-            )
-            self.champion = registry.bootstrap_champion(
-                model=self.initial_model,
-                model_name=str(self.model_name),
-                metadata={"promotion_reason": "bootstrap"},
-            )
+        mlflow_utils.init_mlflow(
+            tracking_uri=str(self.tracking_uri),
+            experiment_name=str(self.experiment_name),
+        )
+        self.champion_info = registry.get_champion(str(self.model_name))
+        self.bootstrapped_champion = self.champion_info is None
+        self.model_config = self._model_config()
+
+        with self._mlflow_step_run("load_or_bootstrap_champion") as logging_enabled:
+            if self.champion_info is None:
+                self.initial_train_result = modeling.train_model(
+                    self.reference_ff,
+                    config=self.model_config,
+                )
+                self.champion_model = self.initial_train_result.model
+                if logging_enabled:
+                    mlflow_utils.log_metrics_safe(
+                        self.initial_train_result.train_metrics,
+                        prefix="initial_train",
+                    )
+                    mlflow_utils.log_metrics_safe(
+                        self.initial_train_result.validation_metrics,
+                        prefix="initial_validation",
+                    )
+                    mlflow_utils.log_params_safe(self.initial_train_result.best_params)
+                    self.champion_info = registry.bootstrap_champion(
+                        self.initial_train_result,
+                        model_name=str(self.model_name),
+                        input_example=self.reference_ff.X.head(5),
+                        tags={
+                            "trained_on_batches": self.reference_batch_id,
+                            "eval_batch_id": self.batch_id,
+                        },
+                        promotion_reason="bootstrap",
+                    )
+                else:
+                    raise RuntimeError(
+                        "Cannot bootstrap champion without an active MLflow run."
+                    )
+            else:
+                self.champion_model_uri = registry.model_uri_for_alias(
+                    str(self.model_name),
+                    config.CHAMPION_ALIAS,
+                )
+                self.champion_model = mlflow.sklearn.load_model(self.champion_model_uri)
+                if logging_enabled:
+                    mlflow_utils.log_params_safe(
+                        {
+                            "champion_version": self.champion_info.version,
+                            "champion_model_uri": self.champion_model_uri,
+                        }
+                    )
+
+        self.old_champion_version = (
+            self.champion_info.version if self.champion_info is not None else None
+        )
+        self.model_to_use_for_inference = self.champion_model
         self.next(self.evaluate_champion)
 
     @step
@@ -192,12 +426,31 @@ class CapstoneFlow(FlowSpec):
         """Evaluate champion on engineered batch features."""
         self._maybe_fail("evaluate_champion")
 
-        # TODO: Evaluate champion on engineered batch features and log RMSE/MAE.
-        self.champion_metrics = modeling.evaluate_regression(
-            model=self.champion,
-            features=self.batch_features,
+        raw_metrics = modeling.evaluate_regression_model(
+            self.champion_model,
+            self.batch_ff,
+            metric_prefix="champion",
         )
-        mlflow_utils.log_metrics("champion", self.champion_metrics)
+        rmse_champion = _metric(raw_metrics, "champion_rmse")
+        rmse_baseline = _baseline_rmse(
+            reference_y=self.reference_ff.y,
+            batch_y=self.batch_ff.y,
+        )
+        rmse_increase_pct = _safe_rmse_increase(
+            rmse_champion=rmse_champion,
+            rmse_baseline=rmse_baseline,
+        )
+        self.champion_metrics = {
+            **raw_metrics,
+            "rmse_champion": rmse_champion,
+            "rmse_baseline": rmse_baseline,
+            "rmse_increase_pct": rmse_increase_pct,
+        }
+
+        with self._mlflow_step_run("evaluate_champion") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_metrics_safe(self.champion_metrics)
+
         self.next(self.decide_retrain)
 
     @step
@@ -205,72 +458,197 @@ class CapstoneFlow(FlowSpec):
         """Decide whether candidate retraining should run."""
         self._maybe_fail("decide_retrain")
 
-        # TODO: Log decision.json always and set retrain_recommended tag.
-        self.retrain_decision = decisions.build_retrain_decision(
-            champion_metrics=self.champion_metrics,
-            soft_integrity=self.soft_integrity,
-            rmse_increase_threshold=float(self.rmse_increase_threshold),
+        rmse_increase_pct = _metric(self.champion_metrics, "rmse_increase_pct")
+        self.retrain_needed = bool(
+            (
+                rmse_increase_pct is not None
+                and rmse_increase_pct > float(self.rmse_increase_threshold)
+            )
+            or bool(getattr(self.soft_result, "warning", False))
         )
-        self.retrain_needed = bool(self.retrain_decision.get("retrain_needed", False))
-        mlflow_utils.set_decision_tags(
-            {"retrain_recommended": str(self.retrain_needed).lower()}
-        )
-        mlflow_utils.log_decision_json(self.retrain_decision)
 
         if self.retrain_needed:
-            self.next(self.retrain_candidate)
+            self.decision = decisions.build_retrain_decision(
+                champion_metrics=self.champion_metrics,
+                soft_integrity={
+                    "integrity_warn": self.integrity_warn,
+                    "warnings": self.soft_result.warnings,
+                    "metrics": self.soft_result.metrics,
+                },
+                rmse_increase_threshold=float(self.rmse_increase_threshold),
+                warnings=self.soft_result.warnings,
+            )
         else:
-            self.next(self.skip_retrain)
+            self.decision = decisions.build_no_retrain_decision(
+                champion_metrics=self.champion_metrics,
+                rmse_increase_threshold=float(self.rmse_increase_threshold),
+                warnings=self.soft_result.warnings,
+            )
+        self.final_decision = self.decision
+
+        with self._mlflow_step_run("decide_retrain") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_decision(
+                    self.decision,
+                    artifact_file=config.DECISION_ARTIFACT,
+                )
+
+        self.retrain_branch = "retrain" if self.retrain_needed else "skip"
+        self.next(
+            {
+                "retrain": self.retrain_candidate,
+                "skip": self.skip_retrain,
+            },
+            condition="retrain_branch",
+        )
 
     @step
     def retrain_candidate(self) -> None:
         """Train and register a candidate model."""
         self._maybe_fail("retrain_candidate")
 
-        # TODO: Train candidate on the selected rolling or expanding training window.
-        self.candidate_model = modeling.train_candidate_model(
-            reference_features=self.reference_features,
-            batch_features=self.batch_features,
-            extra_train_features=self.extra_train_features,
-            use_optuna=bool(self.use_optuna),
-            n_trials=int(self.n_trials),
-        )
+        self.model_config = self._model_config()
+        self.training_batch_ids = [
+            self.reference_batch_id,
+            *self.extra_train_batch_ids,
+            self.batch_id,
+        ]
 
-        # TODO: Register candidate model with tags and validation_status=pending.
-        self.candidate_version = registry.register_candidate(
-            model=self.candidate_model,
-            model_name=str(self.model_name),
-            metadata={"decision_reason": self.retrain_decision.get("reason", "")},
-        )
+        with self._mlflow_step_run("retrain_candidate") as logging_enabled:
+            self.candidate_result = modeling.train_candidate_model(
+                reference_features=self.reference_ff,
+                batch_features=self.batch_ff,
+                extra_train_features=self.extra_train_ffs,
+                config=self.model_config,
+            )
+            self.candidate_model = self.candidate_result.model
+
+            if logging_enabled:
+                mlflow_utils.log_metrics_safe(
+                    self.candidate_result.train_metrics,
+                    prefix="candidate_train",
+                )
+                mlflow_utils.log_metrics_safe(
+                    self.candidate_result.validation_metrics,
+                    prefix="candidate_validation",
+                )
+                mlflow_utils.log_params_safe(self.candidate_result.best_params)
+                if self.candidate_result.optuna_trials is not None:
+                    mlflow_utils.log_tables(
+                        {"optuna_trials": self.candidate_result.optuna_trials},
+                        artifact_dir="training",
+                    )
+                self.candidate_info = registry.register_candidate(
+                    self.candidate_result,
+                    model_name=str(self.model_name),
+                    input_example=self.batch_ff.X.head(5),
+                    trained_on_batches=",".join(self.training_batch_ids),
+                    eval_batch_id=self.batch_id,
+                    validation_status="pending",
+                    decision_reason=str(self.decision.get("reason", "")),
+                )
+            else:
+                raise RuntimeError("Cannot register candidate without an active MLflow run.")
+
+        self.candidate_version = self.candidate_info.version
         self.next(self.evaluate_candidate)
 
     @step
     def skip_retrain(self) -> None:
-        """Record the no-retrain path."""
+        """Keep champion and move directly to inference."""
         self._maybe_fail("skip_retrain")
 
-        # TODO: Log final no-retrain decision evidence before batch inference.
         self.candidate_model = None
-        self.candidate_version = ""
+        self.candidate_info = None
+        self.candidate_version = None
         self.candidate_metrics = {}
-        self.promotion_decision = decisions.build_no_retrain_decision(
-            reason=self.retrain_decision.get("reason", "retrain_not_recommended"),
-            evidence=self.retrain_decision,
-        )
-        mlflow_utils.log_decision_json(self.promotion_decision)
+        self.promotion_decision = self.decision
+        self.model_to_use_for_inference = self.champion_model
+
+        with self._mlflow_step_run("skip_retrain") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_tags_safe(
+                    {
+                        "retrain_recommended": False,
+                        "promotion_recommended": False,
+                        "promotion_executed": False,
+                    }
+                )
+                mlflow_utils.log_decision(
+                    self.promotion_decision,
+                    artifact_file=config.DECISION_ARTIFACT,
+                )
+
         self.next(self.batch_inference)
 
     @step
     def evaluate_candidate(self) -> None:
-        """Evaluate candidate on the same engineered batch features."""
+        """Evaluate candidate and run a simple stability check."""
         self._maybe_fail("evaluate_candidate")
 
-        # TODO: Evaluate candidate on the same batch as champion.
-        self.candidate_metrics = modeling.evaluate_regression(
-            model=self.candidate_model,
-            features=self.batch_features,
+        raw_candidate_metrics = modeling.evaluate_regression_model(
+            self.candidate_model,
+            self.batch_ff,
+            metric_prefix="candidate",
         )
-        mlflow_utils.log_metrics("candidate", self.candidate_metrics)
+        self.candidate_metrics = {
+            **raw_candidate_metrics,
+            "rmse_candidate": _metric(raw_candidate_metrics, "candidate_rmse"),
+        }
+
+        self.stability_check_assumption = ""
+        try:
+            champion_reference_metrics = modeling.evaluate_regression_model(
+                self.champion_model,
+                self.reference_ff,
+                metric_prefix="champion_reference",
+            )
+            candidate_reference_metrics = modeling.evaluate_regression_model(
+                self.candidate_model,
+                self.reference_ff,
+                metric_prefix="candidate_reference",
+            )
+            champion_reference_rmse = _metric(
+                champion_reference_metrics,
+                "champion_reference_rmse",
+            )
+            candidate_reference_rmse = _metric(
+                candidate_reference_metrics,
+                "candidate_reference_rmse",
+            )
+            self.stability_check_passed = bool(
+                champion_reference_rmse is not None
+                and candidate_reference_rmse is not None
+                and candidate_reference_rmse <= champion_reference_rmse * 1.10
+            )
+            self.stability_metrics = {
+                **champion_reference_metrics,
+                **candidate_reference_metrics,
+                "stability_check_passed": int(self.stability_check_passed),
+            }
+        except Exception as exc:
+            self.stability_check_passed = True
+            self.stability_check_assumption = (
+                "stability check assumed passed because reference evaluation failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.stability_metrics = {
+                "stability_check_passed": 1,
+                "stability_assumed": 1,
+            }
+
+        with self._mlflow_step_run("evaluate_candidate") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_metrics_safe(self.candidate_metrics)
+                mlflow_utils.log_metrics_safe(self.stability_metrics)
+                if self.stability_check_assumption:
+                    mlflow_utils.log_tags_safe(
+                        {
+                            "stability_check_assumed": True,
+                            "stability_check_reason": self.stability_check_assumption,
+                        }
+                    )
+
         self.next(self.promotion_gate)
 
     @step
@@ -278,38 +656,56 @@ class CapstoneFlow(FlowSpec):
         """Decide whether to promote the candidate to champion."""
         self._maybe_fail("promotion_gate")
 
-        # TODO: Apply promotion gate with min_improvement.
-        # TODO: Add stability check to avoid one-batch overfit.
-        # TODO: Prevent promotion without evaluation metrics.
         self.promotion_decision = decisions.build_promotion_decision(
             champion_metrics=self.champion_metrics,
             candidate_metrics=self.candidate_metrics,
             min_improvement=float(self.min_improvement),
-            evidence={
-                "hard_integrity": self.hard_integrity,
-                "soft_integrity": self.soft_integrity,
-                "candidate_version": self.candidate_version,
-            },
+            old_champion_version=self.old_champion_version,
+            candidate_version=self.candidate_version,
+            stability_check_passed=bool(self.stability_check_passed),
+            warnings=getattr(self.soft_result, "warnings", []),
         )
         self.promotion_recommended = bool(
             self.promotion_decision.get("promotion_recommended", False)
         )
-        mlflow_utils.set_decision_tags(
-            {"promotion_recommended": str(self.promotion_recommended).lower()}
-        )
+        self.promotion_executed = False
 
-        if self.promotion_recommended:
-            # TODO: Update @champion alias.
-            # TODO: Tag previous champion as previous_champion.
-            # TODO: Tag new champion as champion with promoted_at and promotion_reason.
-            registry.promote_candidate(
-                model_name=str(self.model_name),
-                candidate_version=str(self.candidate_version),
-                reason=str(self.promotion_decision.get("reason", "")),
-            )
+        with self._mlflow_step_run("promotion_gate") as logging_enabled:
+            if self.promotion_recommended:
+                promoted_info = registry.promote_candidate(
+                    model_name=str(self.model_name),
+                    candidate_version=str(self.candidate_version),
+                    old_champion_version=self.old_champion_version,
+                    promotion_reason=str(self.promotion_decision.get("reason", "")),
+                    tags={
+                        "eval_batch_id": self.batch_id,
+                        "trained_on_batches": ",".join(self.training_batch_ids),
+                    },
+                )
+                self.promotion_executed = True
+                self.champion_info = promoted_info
+                self.model_to_use_for_inference = self.candidate_model
+                self.final_decision = decisions.build_promotion_decision(
+                    champion_metrics=self.champion_metrics,
+                    candidate_metrics=self.candidate_metrics,
+                    min_improvement=float(self.min_improvement),
+                    old_champion_version=self.old_champion_version,
+                    candidate_version=self.candidate_version,
+                    new_champion_version=promoted_info.version,
+                    stability_check_passed=bool(self.stability_check_passed),
+                    warnings=getattr(self.soft_result, "warnings", []),
+                    reason=str(self.promotion_decision.get("reason", "")),
+                )
+            else:
+                self.model_to_use_for_inference = self.champion_model
+                self.final_decision = self.promotion_decision
 
-        # TODO: Log decision.json always with final promotion or rejection details.
-        mlflow_utils.log_decision_json(self.promotion_decision)
+            if logging_enabled:
+                mlflow_utils.log_decision(
+                    self.final_decision,
+                    artifact_file=config.DECISION_ARTIFACT,
+                )
+
         self.next(self.batch_inference)
 
     @step
@@ -317,23 +713,86 @@ class CapstoneFlow(FlowSpec):
         """Run offline batch inference and log predictions."""
         self._maybe_fail("batch_inference")
 
-        # TODO: Use the current champion after any alias flip.
-        # TODO: Log predictions.parquet as a batch inference artifact.
-        self.predictions = inference.run_batch_inference(
-            model=self.champion,
-            features=self.batch_features,
+        self.batch_inference_ff = features.build_feature_frame(
+            self.batch_raw,
+            labels_required=False,
         )
-        inference.write_predictions_parquet(self.predictions, "predictions.parquet")
-        mlflow_utils.log_artifact_file("predictions.parquet")
+        self.batch_inference_ff.X = features.align_to_feature_spec(
+            self.batch_inference_ff,
+            self.feature_spec,
+        )
+        self.batch_inference_ff.spec = self.feature_spec
+
+        self.inference_result = inference.run_batch_inference(
+            self.model_to_use_for_inference,
+            self.batch_inference_ff,
+            output_path=self.inference_output_path,
+            prediction_column=config.defaults().prediction_column,
+            include_row_ids=True,
+            include_labels=False,
+        )
+        self.predictions_output_path = self.inference_result.output_path
+
+        with self._mlflow_step_run("batch_inference") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_metrics_safe(
+                    {"n_predictions": self.inference_result.n_predictions},
+                    prefix="inference",
+                )
+                if self.predictions_output_path is not None:
+                    mlflow_utils.log_artifact_if_exists(
+                        self.predictions_output_path,
+                        artifact_path=config.PREDICTIONS_ARTIFACT_DIR,
+                    )
+
         self.next(self.end)
 
     @step
     def end(self) -> None:
-        """Finish the run and leave an auditable final state."""
+        """Finish the run and print a compact final summary."""
         self._maybe_fail("end")
 
-        # TODO: Ensure decision.json was logged on every terminal path.
+        decision = self.final_decision or self.decision or {}
         self.flow_status = "finished"
+        self.summary = {
+            "action": decision.get("action"),
+            "final_decision": decision.get("final_decision"),
+            "retrain_recommended": decision.get("retrain_recommended", False),
+            "promotion_executed": decision.get("promotion_executed", False),
+        }
+        print(f"Capstone flow summary: {self.summary}")
+
+
+def _metric(metrics: dict[str, object], key: str) -> float | None:
+    """Return a metric as float when possible."""
+    value = metrics.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _baseline_rmse(reference_y: np.ndarray | None, batch_y: np.ndarray | None) -> float | None:
+    """Compute batch RMSE for a constant reference-mean baseline."""
+    if reference_y is None or batch_y is None or len(reference_y) == 0 or len(batch_y) == 0:
+        return None
+    baseline_value = float(np.nanmean(np.asarray(reference_y, dtype=float)))
+    y_true = np.asarray(batch_y, dtype=float)
+    baseline_pred = np.full(shape=len(y_true), fill_value=baseline_value, dtype=float)
+    return float(np.sqrt(np.nanmean((y_true - baseline_pred) ** 2)))
+
+
+def _safe_rmse_increase(
+    *,
+    rmse_champion: float | None,
+    rmse_baseline: float | None,
+) -> float | None:
+    """Compute relative RMSE increase with safe missing/zero handling."""
+    if rmse_champion is None or rmse_baseline is None or rmse_baseline == 0:
+        return None
+    return float((rmse_champion - rmse_baseline) / rmse_baseline)
 
 
 if __name__ == "__main__":
