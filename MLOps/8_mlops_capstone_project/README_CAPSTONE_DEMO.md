@@ -60,6 +60,7 @@ python capstone_flow.py run \
   --reference_path data/TLC_data/green_tripdata_2020-01.parquet \
   --batch_path data/TLC_data/green_tripdata_2020-04.parquet \
   --model_type xgboost_gpu \
+  --retrain_on_soft_warning false \
   --experiment_name 8_green_taxi_capstone_demo \
   --model_name green_taxi_tip_model_capstone_demo \
   --inference_output_path outputs/predictions_demo_promote.parquet
