@@ -787,29 +787,39 @@ class CapstoneFlow(FlowSpec):
     @step
     def batch_inference(self) -> None:
         """Run offline batch inference and log predictions."""
-        self._maybe_fail("batch_inference")
-
-        self.batch_inference_ff = features.build_feature_frame(
-            self.batch_raw,
-            labels_required=False,
-        )
-        self.batch_inference_ff.X = features.align_to_feature_spec(
-            self.batch_inference_ff,
-            self.feature_spec,
-        )
-        self.batch_inference_ff.spec = self.feature_spec
-
-        self.inference_result = inference.run_batch_inference(
-            self.model_to_use_for_inference,
-            self.batch_inference_ff,
-            output_path=self.inference_output_path,
-            prediction_column=config.defaults().prediction_column,
-            include_row_ids=True,
-            include_labels=False,
-        )
-        self.predictions_output_path = self.inference_result.output_path
-
         with self._mlflow_step_run("batch_inference") as logging_enabled:
+            if logging_enabled:
+                mlflow_utils.log_tags_safe(
+                    {
+                        "fail_at_step": str(self.fail_at_step),
+                        "intentional_failure_requested": str(
+                            str(self.fail_at_step).strip() == "batch_inference"
+                        ).lower(),
+                    }
+                )
+
+            self._maybe_fail("batch_inference")
+
+            self.batch_inference_ff = features.build_feature_frame(
+                self.batch_raw,
+                labels_required=False,
+            )
+            self.batch_inference_ff.X = features.align_to_feature_spec(
+                self.batch_inference_ff,
+                self.feature_spec,
+            )
+            self.batch_inference_ff.spec = self.feature_spec
+
+            self.inference_result = inference.run_batch_inference(
+                self.model_to_use_for_inference,
+                self.batch_inference_ff,
+                output_path=self.inference_output_path,
+                prediction_column=config.defaults().prediction_column,
+                include_row_ids=True,
+                include_labels=False,
+            )
+            self.predictions_output_path = self.inference_result.output_path
+
             if logging_enabled:
                 mlflow_utils.log_metrics_safe(
                     {"n_predictions": self.inference_result.n_predictions},
