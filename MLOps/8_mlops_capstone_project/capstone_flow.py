@@ -62,7 +62,7 @@ class CapstoneFlow(FlowSpec):
     model_type = Parameter(
         "model_type",
         default=config.defaults().model_type,
-        help="Model family to train: random_forest, xgboost, or xgb.",
+        help="Model family to train: random_forest/rf, xgboost/xgb, or xgboost_gpu/xgb_gpu.",
     )
     min_improvement = Parameter(
         "min_improvement",
