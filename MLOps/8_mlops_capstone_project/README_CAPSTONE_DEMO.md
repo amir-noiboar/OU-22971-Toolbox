@@ -159,9 +159,10 @@ export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
 rm -f /tmp/capstone_flow_fail_once_batch_inference.marker
 
 python capstone_flow.py run \
-  --reference_path data/TLC_data/green_tripdata_2020-01.parquet \
-  --batch_path data/TLC_data/green_tripdata_2020-04.parquet \
+  --reference_path data/TLC_data/green_tripdata_2020-04.parquet \
+  --batch_path data/TLC_data/green_tripdata_2020-08.parquet \
   --model_type xgboost_gpu \
+  --retrain_on_soft_warning false \
   --experiment_name 8_green_taxi_capstone_demo_final \
   --model_name green_taxi_tip_model_capstone_demo_final \
   --inference_output_path outputs/predictions_demo_resume.parquet \
