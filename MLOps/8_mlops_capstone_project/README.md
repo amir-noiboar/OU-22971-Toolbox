@@ -6,7 +6,7 @@ This README contains the setup, validation commands, demo scenarios, MLflow insp
 
 This project implements a Metaflow workflow for NYC Green Taxi tip prediction. It includes raw-data integrity checks, feature engineering, soft monitoring with manual checks and optional NannyML, MLflow tracking, model registry with champion/candidate aliases, retraining/promotion logic, batch inference, and a failure/resume demonstration.
 
-For course submission, this file can serve as the capstone README/demo guide. If the course expects a file named `README.md`, copy or link this content from `README.md`.
+For course submission, this file is the main capstone README/demo guide. The extended duplicate guide is also available in `README_CAPSTONE_DEMO.md`.
 
 Main workflow:
 
@@ -44,11 +44,13 @@ export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
 
 ## Optional: Clean MLflow Before Recording
 
-`scripts/hard_clean_mlflow.py` is destructive and should only be used in a local demo environment. It permanently deletes non-default experiments and registered models, then garbage-collects deleted experiments so old experiment names can be reused.
+`scripts/hard_clean_mlflow.py` is destructive and should only be used in a local demo environment. It permanently deletes non-default experiments and registered models, then garbage-collects deleted experiments so old experiment names can be reused. Run this before recording if you want Demo Run 1 to clearly show bootstrap with no existing `@champion`.
 
 Dry run first:
 
 ```bash
+cd ~/dev/OU-22971-Toolbox
+conda activate 22971-capstone
 python MLOps/8_mlops_capstone_project/scripts/hard_clean_mlflow.py \
   --tracking-uri http://127.0.0.1:5000 \
   --backend-store-uri sqlite:////home/amir_noiboar/dev/OU-22971-Toolbox/mlflow_tracking/mlflow.db \
@@ -59,6 +61,8 @@ python MLOps/8_mlops_capstone_project/scripts/hard_clean_mlflow.py \
 Actual clean:
 
 ```bash
+cd ~/dev/OU-22971-Toolbox
+conda activate 22971-capstone
 python MLOps/8_mlops_capstone_project/scripts/hard_clean_mlflow.py \
   --tracking-uri http://127.0.0.1:5000 \
   --backend-store-uri sqlite:////home/amir_noiboar/dev/OU-22971-Toolbox/mlflow_tracking/mlflow.db \
@@ -77,30 +81,14 @@ cd MLOps/8_mlops_capstone_project
 python capstone_flow.py check
 ```
 
-## Demo Scenario A: Promotion / Retraining Path
+## Recommended Recording Order
 
-```bash
-cd ~/dev/OU-22971-Toolbox/MLOps/8_mlops_capstone_project
-conda activate 22971-capstone
-export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+0. Optional hard-clean MLflow so no champion exists.
+1. Baseline/no-action run using January as both reference and batch. Because no champion exists, this also demonstrates bootstrap: initial model registration and `@champion` alias creation.
+2. Retrain + promotion run using January reference and April batch, with the same `experiment_name` and `model_name` as run 1, so it loads the champion created in run 1.
+3. Failure + resume run.
 
-python capstone_flow.py run \
-  --reference_path data/TLC_data/green_tripdata_2020-01.parquet \
-  --batch_path data/TLC_data/green_tripdata_2020-04.parquet \
-  --model_type xgboost_gpu \
-  --retrain_on_soft_warning false \
-  --experiment_name 8_green_taxi_capstone_demo \
-  --model_name green_taxi_tip_model_capstone_demo \
-  --inference_output_path outputs/predictions_demo_promote.parquet
-```
-
-Expected final summary: `candidate_promoted`, `retrain_recommended=True`, `promotion_executed=True`.
-
-This run uses January 2020 as the reference slice and April 2020 as the batch. `--retrain_on_soft_warning false` means soft monitoring warnings are logged but do not trigger retraining.
-
-Retraining is triggered by performance drift: the champion's batch RMSE is compared against its reference RMSE. In MLflow, show `champion_rmse`, `champion_reference_rmse`, `rmse_increase_pct`, `candidate_rmse`, and `decision.json`.
-
-## Demo Scenario B: No-Retrain Path
+## Demo Run 1: Baseline / Bootstrap / No-Action Path
 
 ```bash
 cd ~/dev/OU-22971-Toolbox/MLOps/8_mlops_capstone_project
@@ -112,18 +100,58 @@ python capstone_flow.py run \
   --batch_path data/TLC_data/green_tripdata_2020-01.parquet \
   --model_type xgboost_gpu \
   --retrain_on_soft_warning false \
-  --experiment_name 8_green_taxi_capstone_demo_no_retrain \
-  --model_name green_taxi_tip_model_capstone_demo_no_retrain \
-  --inference_output_path outputs/predictions_demo_no_retrain.parquet
+  --experiment_name 8_green_taxi_capstone_demo_final \
+  --model_name green_taxi_tip_model_capstone_demo_final \
+  --inference_output_path outputs/predictions_demo_baseline.parquet
 ```
 
-Expected final summary: `keep_champion`, `no_retrain`, `retrain_recommended=False`, `promotion_executed=False`.
+Expected final summary: `no_retrain`, `retrain_recommended=False`, `promotion_executed=False`.
 
-This run uses the same January 2020 file as both reference and batch. It demonstrates the baseline/no-action path required by the design doc.
+This is the required baseline/no-action run. It uses the same January 2020 file as both reference and batch.
 
-Show `decision.json` with `retrain_recommended=false` and `promotion_recommended=false`.
+Because the MLflow registry is clean and no `@champion` exists, the flow bootstraps the initial champion. Bootstrap registers model version 1 and sets `@champion`. This is not retraining/promotion; it is initial champion creation.
 
-## Demo Scenario C: Failure / Resume
+What to show in MLflow:
+
+- `capstone_load_or_bootstrap_champion` run.
+- Model Registry version 1.
+- `@champion` alias.
+- `role=champion`.
+- `promotion_reason=bootstrap`.
+- `decide_retrain` `decision.json` with `retrain_recommended=false` and `promotion_recommended=false`.
+
+## Demo Run 2: Retrain + Promotion Using Existing Champion
+
+```bash
+cd ~/dev/OU-22971-Toolbox/MLOps/8_mlops_capstone_project
+conda activate 22971-capstone
+export MLFLOW_TRACKING_URI=http://127.0.0.1:5000
+
+python capstone_flow.py run \
+  --reference_path data/TLC_data/green_tripdata_2020-01.parquet \
+  --batch_path data/TLC_data/green_tripdata_2020-04.parquet \
+  --model_type xgboost_gpu \
+  --retrain_on_soft_warning false \
+  --experiment_name 8_green_taxi_capstone_demo_final \
+  --model_name green_taxi_tip_model_capstone_demo_final \
+  --inference_output_path outputs/predictions_demo_promote.parquet
+```
+
+Expected final summary: `candidate_promoted`, `retrain_recommended=True`, `promotion_executed=True`.
+
+This run uses January 2020 as the reference slice and April 2020 as the batch. `--retrain_on_soft_warning false` means soft monitoring warnings are logged but do not trigger retraining.
+
+The champion already exists from Run 1, so this run loads the existing `@champion` instead of bootstrapping. Retraining is triggered by performance drift: champion batch RMSE versus champion reference RMSE. The candidate is promoted only if it beats the champion by `min_improvement` and passes stability checks.
+
+What to show in MLflow:
+
+- `evaluate_champion` metrics: `champion_rmse`, `champion_reference_rmse`, `rmse_increase_pct`, `naive_baseline_rmse`.
+- `decide_retrain` `decision.json` with `retrain_recommended=true`.
+- `evaluate_candidate` `candidate_rmse`.
+- `promotion_gate` `decision.json` with `promotion_executed=true`.
+- Model Registry: old version tagged `role=previous_champion`, new version has `@champion`.
+
+## Demo Run 3: Failure / Resume
 
 ```bash
 cd ~/dev/OU-22971-Toolbox/MLOps/8_mlops_capstone_project
@@ -136,8 +164,8 @@ python capstone_flow.py run \
   --reference_path data/TLC_data/green_tripdata_2020-01.parquet \
   --batch_path data/TLC_data/green_tripdata_2020-04.parquet \
   --model_type xgboost_gpu \
-  --experiment_name 8_green_taxi_capstone_demo_resume \
-  --model_name green_taxi_tip_model_capstone_demo_resume \
+  --experiment_name 8_green_taxi_capstone_demo_final \
+  --model_name green_taxi_tip_model_capstone_demo_final \
   --inference_output_path outputs/predictions_demo_resume.parquet \
   --fail_at_step batch_inference
 
@@ -150,7 +178,7 @@ The failure is intentionally triggered at `batch_inference` because earlier expe
 
 ## What To Show In MLflow
 
-- Experiments for each demo scenario.
+- The shared demo experiment: `8_green_taxi_capstone_demo_final`, containing the baseline/bootstrap, retrain/promotion, and failure/resume runs.
 - Per-step runs named `capstone_<step>_<batch_id>`.
 - Integrity metrics and tables.
 - `soft_checks` tables plus NannyML/manual warnings.
@@ -182,8 +210,8 @@ Also show terminal output with successful steps, and resume output showing clone
 
 - [ ] `git status` clean
 - [ ] `capstone_flow.py check` passes
-- [ ] Promotion scenario run
-- [ ] No-retrain scenario run
+- [ ] Baseline/bootstrap/no-action run
+- [ ] Retrain/promotion run
 - [ ] Failure/resume scenario run
 - [ ] MLflow `decision.json` visible
 - [ ] Predictions parquet visible
